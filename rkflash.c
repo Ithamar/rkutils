@@ -134,10 +134,16 @@ static int verbose = 0;
 static usb_dev_handle *xsv_handle;
 
 static int
-locate_device(void)
+bulk_init(const char *device)
 {
 	struct usb_bus *bus;
 	struct usb_device *dev;
+
+
+	usb_init();
+
+	if (verbose)
+		usb_set_debug(verbose);
 
 	usb_find_busses();
 	usb_find_devices();
@@ -145,27 +151,22 @@ locate_device(void)
 	xsv_handle = NULL;
 	for (bus = usb_busses; bus; bus = bus->next) {
 		for (dev = bus->devices; dev; dev = dev->next) {
-			if (dev->descriptor.idVendor == 0x2207 && dev->descriptor.idProduct == 0x281a) {
+			if (device && strcmp(dev->filename, device) != 0)
+				continue;
+
+			if (dev->descriptor.idVendor == 0x2207 &&
+				dev->descriptor.idProduct == 0x281a) {
 				xsv_handle = usb_open(dev);
-				if (verbose)
-					printf("RK28x8 Device Found @ Address %s\n", dev->filename);
+				if (verbose) {
+					printf("using RK28x8 device @ %s\n",
+						dev->filename);
+				}
 				break;
 			}
 		}
 	}
 
-	return xsv_handle == NULL;
-}
-
-static int
-bulk_init(void)
-{
-	usb_init();
-
-	if (verbose)
-		usb_set_debug(verbose);
-
-	if (locate_device() == 0) {
+	if (xsv_handle) {
 		usb_set_configuration(xsv_handle,1);
 		usb_claim_interface(xsv_handle,0);
 		usb_set_altinterface(xsv_handle,0);
@@ -179,14 +180,22 @@ bulk_init(void)
 #define BULK_SEND_EP2(buf, size)	usb_bulk_write(xsv_handle, 2, (void*)buf, size, 500)
 #define BULK_RECV_EP1(buf, size)	usb_bulk_read(xsv_handle, 1, (void*)buf, size, 500)
 #else
+static int fd_in, fd_out;
+
 static int
-bulk_init(void)
+bulk_init(const char *device)
 {
+	if (device == NULL) {
+		fd_in = STDIN_FILENO;
+		fd_out = STDOUT_FILENO;
+	} else
+		fd_in = fd_out = open(device, O_RDWR);
+
 	return 0;
 }
 
-#define BULK_SEND_EP2(buf, size)	write(STDOUT_FILENO, (buf), (size))
-#define BULK_RECV_EP1(buf, size)	read(STDIN_FILENO, (buf), (size))
+#define BULK_SEND_EP2(buf, size)	write(fd_out, (buf), (size))
+#define BULK_RECV_EP1(buf, size)	read(fd_in, (buf), (size))
 #endif
 
 #define _BLOCKSIZE	(16 * 1024)
@@ -197,7 +206,7 @@ static void
 usage(void)
 {
 
-	fprintf(stderr, "usage: %s [-v] [-B] [-r size] offset file\n", progname);
+	fprintf(stderr, "usage: %s [-D device] [-v] [-B] [-r size] offset file\n", progname);
 	exit(EXIT_FAILURE);
 }
 
@@ -210,21 +219,22 @@ main(int argc, char *argv[])
 	int32_t size;
 	uint8_t *buf;
 	int ch, img, boot;
+	const char *device = NULL;
 
 	progname = argv[0];
 
-	if (bulk_init() != 0)
-		errx(EXIT_FAILURE, "Failure finding device\n");
-
 	boot = 0;
 	size = 0;
-	while ((ch = getopt(argc, argv, "vBr:")) != -1) {
+	while ((ch = getopt(argc, argv, "vBr:D:")) != -1) {
 		switch (ch) {
 		case 'v':
 			verbose++;
 			break;
 		case 'B':
 			boot = 1;
+			break;
+		case 'D':
+			device = strdup(optarg);
 			break;
 		case 'r':
 			size = strtoul(optarg, NULL, 0);
@@ -235,6 +245,9 @@ main(int argc, char *argv[])
 	}
 	argc -= optind;
 	argv += optind;
+
+	if (bulk_init(device) != 0)
+		errx(EXIT_FAILURE, "Failure finding device\n");
 
 	if (argc != 2)
 		usage();
