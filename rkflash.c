@@ -1,5 +1,6 @@
 /*-
  * Copyright (c) 2010, 2011 FUKAUMI Naoki.
+ * Copyright (c) 2011 Ithamar R. Adema. (added libusb support)
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -125,8 +126,68 @@ do {									\
 	(c).size = 0x20;						\
 } while(/* CONSTCOND */0)
 
+static int verbose = 0;
+
+#ifdef HAS_USBLIB
+#include <usb.h>
+
+static usb_dev_handle *xsv_handle;
+
+static int
+locate_device(void)
+{
+	struct usb_bus *bus;
+	struct usb_device *dev;
+
+	usb_find_busses();
+	usb_find_devices();
+
+	xsv_handle = NULL;
+	for (bus = usb_busses; bus; bus = bus->next) {
+		for (dev = bus->devices; dev; dev = dev->next) {
+			if (dev->descriptor.idVendor == 0x2207 && dev->descriptor.idProduct == 0x281a) {
+				xsv_handle = usb_open(dev);
+				if (verbose)
+					printf("RK28x8 Device Found @ Address %s\n", dev->filename);
+				break;
+			}
+		}
+	}
+
+	return xsv_handle == NULL;
+}
+
+static int
+bulk_init(void)
+{
+	usb_init();
+
+	if (verbose)
+		usb_set_debug(verbose);
+
+	if (locate_device() == 0) {
+		usb_set_configuration(xsv_handle,1);
+		usb_claim_interface(xsv_handle,0);
+		usb_set_altinterface(xsv_handle,0);
+
+		return 0;
+	} else {
+		return -1;
+	}
+}
+
+#define BULK_SEND_EP2(buf, size)	usb_bulk_write(xsv_handle, 2, (void*)buf, size, 500)
+#define BULK_RECV_EP1(buf, size)	usb_bulk_read(xsv_handle, 1, (void*)buf, size, 500)
+#else
+static int
+bulk_init(void)
+{
+	return 0;
+}
+
 #define BULK_SEND_EP2(buf, size)	write(STDOUT_FILENO, (buf), (size))
 #define BULK_RECV_EP1(buf, size)	read(STDIN_FILENO, (buf), (size))
+#endif
 
 #define _BLOCKSIZE	(16 * 1024)
 
@@ -136,7 +197,7 @@ static void
 usage(void)
 {
 
-	fprintf(stderr, "usage: %s [-B] [-r size] offset file\n", progname);
+	fprintf(stderr, "usage: %s [-v] [-B] [-r size] offset file\n", progname);
 	exit(EXIT_FAILURE);
 }
 
@@ -152,10 +213,16 @@ main(int argc, char *argv[])
 
 	progname = argv[0];
 
+	if (bulk_init() != 0)
+		errx(EXIT_FAILURE, "Failure finding device\n");
+
 	boot = 0;
 	size = 0;
-	while ((ch = getopt(argc, argv, "Br:")) != -1) {
+	while ((ch = getopt(argc, argv, "vBr:")) != -1) {
 		switch (ch) {
+		case 'v':
+			verbose++;
+			break;
 		case 'B':
 			boot = 1;
 			break;
@@ -208,7 +275,8 @@ main(int argc, char *argv[])
 #endif
 	if (size == 0) {
 		while (read(img, buf, _BLOCKSIZE) > 0) {
-			fprintf(stderr, "writing offset 0x%08x\n", off);
+			if (verbose)
+				fprintf(stderr, "writing offset 0x%08x\n", off);
 
 			SETCMD_WRITE(c, off);
 			BULK_SEND_EP2(&c, sizeof(c));
@@ -222,7 +290,8 @@ main(int argc, char *argv[])
 		}
 	} else {
 		while (size > 0) {
-			fprintf(stderr, "reading offset 0x%08x\n", off);
+			if (verbose)
+				fprintf(stderr, "reading offset 0x%08x\n", off);
 
 			SETCMD_READ(c, off);
 			BULK_SEND_EP2(&c, sizeof(c));
