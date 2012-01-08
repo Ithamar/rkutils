@@ -128,7 +128,7 @@ do {									\
 
 static int verbose = 0;
 
-#ifdef HAS_USBLIB
+#ifdef HAS_LIBUSB
 #include <usb.h>
 
 static usb_dev_handle *xsv_handle;
@@ -155,10 +155,11 @@ bulk_init(const char *device)
 				continue;
 
 			if (dev->descriptor.idVendor == 0x2207 &&
-				dev->descriptor.idProduct == 0x281a) {
+				(dev->descriptor.idProduct == 0x290a ||
+				dev->descriptor.idProduct == 0x281a)) {
 				xsv_handle = usb_open(dev);
 				if (verbose) {
-					printf("using RK28x8 device @ %s\n",
+					printf("using rockchip device @ %s\n",
 						dev->filename);
 				}
 				break;
@@ -220,6 +221,7 @@ main(int argc, char *argv[])
 	uint8_t *buf;
 	int ch, img, boot;
 	const char *device = NULL;
+	int res;
 
 	progname = argv[0];
 
@@ -274,9 +276,11 @@ main(int argc, char *argv[])
 	c.hdr[2] = 'B';
 	c.hdr[3] = 'C';
 
-	SETCMD_INIT(c);
-	BULK_SEND_EP2(&c, sizeof(c));
-	BULK_RECV_EP1(&r, sizeof(r));
+	do {
+		SETCMD_INIT(c);
+		BULK_SEND_EP2(&c, sizeof(c));
+		res = BULK_RECV_EP1(&r, sizeof(r));
+	} while(res < 0);
 
 	usleep(20 * 1000);
 #if 0
@@ -296,7 +300,8 @@ main(int argc, char *argv[])
 
 			BULK_SEND_EP2(buf, _BLOCKSIZE);
 
-			BULK_RECV_EP1(&r, sizeof(r));
+			if (BULK_RECV_EP1(&r, sizeof(r)) < 0)
+				fprintf(stderr, "error writing offset 0x%08x\n", off);
 
 			off += 0x20;
 			memset(buf, 0, _BLOCKSIZE);
@@ -311,7 +316,8 @@ main(int argc, char *argv[])
 
 			BULK_RECV_EP1(buf, _BLOCKSIZE);
 
-			BULK_RECV_EP1(&r, sizeof(r));
+			if (BULK_RECV_EP1(&r, sizeof(r)) < 0)
+				fprintf(stderr, "error reading offset 0x%08x\n", off);
 
 			write(img, buf, _BLOCKSIZE);
 
